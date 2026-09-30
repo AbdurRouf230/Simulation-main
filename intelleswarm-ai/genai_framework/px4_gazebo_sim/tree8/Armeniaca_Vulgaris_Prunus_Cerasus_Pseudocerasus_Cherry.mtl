@@ -1,0 +1,46 @@
+# Blender 5.2.0 LTS MTL File: 'None'
+# www.blender.org
+
+newmtl vray_Material__43.008
+Ns 35.714291
+Ka 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.520000
+d 1.000000
+illum 2
+map_Kd Map/Armeniaca_Vulgaris_Prunus_Fruit.jpeg
+map_Ks Map/Armeniaca_Vulgaris_Prunus_Fruit_Gloss.jpeg
+map_Bump Map/Armeniaca_Vulgaris_Prunus_Fruit_Normal.jpeg
+
+newmtl vray_Material__45.008
+Ns 42.857101
+Ka 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.520000
+illum 2
+map_Kd Map/Armeniaca_Vulgaris_Prunus_Leaf.jpeg
+map_Ks Map/Armeniaca_Vulgaris_Prunus_Leaf_Gloss.jpeg
+map_d Map/Armeniaca_Vulgaris_Prunus_Leaf_Opacity.jpeg
+map_Bump Map/Armeniaca_Vulgaris_Prunus_Leaf_Normal.jpeg
+
+newmtl vray_Material__46.008
+Ns 32.142895
+Ka 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.520000
+d 1.000000
+illum 2
+map_Kd Map/Armeniaca_Vulgaris_Prunus_Cap.jpeg
+map_Ks Map/Armeniaca_Vulgaris_Prunus_Cap_Gloss.jpeg
+map_Bump Map/Armeniaca_Vulgaris_Prunus_Cap_Normal.jpeg
+
+newmtl vray_Material__47.008
+Ns 32.142895
+Ka 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.520000
+d 1.000000
+illum 2
+map_Kd Map/Armeniaca_Vulgaris_Prunus_Trunk.jpeg
+map_Ks Map/Armeniaca_Vulgaris_Prunus_Trunk_Gloss.jpeg
+map_Bump Map/Armeniaca_Vulgaris_Prunus_Trunk_Normal.jpeg
