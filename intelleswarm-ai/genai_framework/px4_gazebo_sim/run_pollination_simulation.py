@@ -549,6 +549,8 @@ class PollinationSimulationRunner:
             env['POLLINATION_AUTO_START'] = auto_start
             env['POLLINATION_NUM_DRONES'] = str(self.config.num_drones)
             env['POLLINATION_DURATION'] = str(self.config.simulation_duration)
+            env['PX4_GZ_WORLD'] = getattr(self, "_gz_world_name", "agricultural_farm")
+            env['WORLD_FILE'] = self.config.world_file
             env['PYTHONPATH'] = f"{repo_root}:{env.get('PYTHONPATH', '')}"
 
             if _can_import_px4_msgs():

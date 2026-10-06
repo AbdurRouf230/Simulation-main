@@ -18,6 +18,7 @@ Enhanced ROS 2 node for IntelleSwarm Assistive Pollination missions:
 Compatible with agricultural_farm.world and px4_multi_drone.sh
 """
 
+import json
 import math
 import os
 import sys
@@ -67,7 +68,6 @@ except ImportError as e:
 try:
     from flower_prediction_json import (
         FlowerDetector,
-        JSON_PATH,
         detect_rgb,
         get_detector,
         reset_prediction_log,
@@ -77,7 +77,6 @@ except ImportError as e:
     FlowerDetector = None
     get_detector = None
     reset_prediction_log = None
-    JSON_PATH = None
     detect_rgb = None
 
 # Prebuilt multi_drone_script stack (not reimplemented here)
@@ -143,6 +142,8 @@ class IntelleSwarmPollinationNode(Node):
 
         # Load configuration
         self._load_configuration()
+        # One id for this spawn. Swarm state and flower predictions both use it.
+        self._swarm_run_id = time.strftime("%Y%m%d_%H%M%S")
 
         # Initialize components
         self._init_agricultural_ai()
@@ -243,10 +244,9 @@ class IntelleSwarmPollinationNode(Node):
             return
 
         # 256x256 keeps transformer tokens under EdgePerceptionTransformer pos_embed (1024).
-        json_path = JSON_PATH if JSON_PATH is not None else "flower_predictions.json"
         self.get_logger().info(
             "✅ Agricultural AI ready: FlowerDetector.detect_flowers on down-cam captures; "
-            f"one JSON -> {json_path}"
+            f"JSON for this spawn -> flower_predictions_{self._swarm_run_id}.json"
         )
 
     def _init_mission_planning(self):
@@ -259,14 +259,21 @@ class IntelleSwarmPollinationNode(Node):
             self.get_logger().warn(f"Mission planner not available: {e}")
             self.mission_planner = None
 
-        # Known flower patches from the world
-        self.flower_patches = [
-            FlowerPatch(1, 50, 50, 15, "sunflower", 100, 0.0),
-            FlowerPatch(2, -50, 50, 12, "sunflower", 100, 0.0),
-            FlowerPatch(3, 0, 0, 20, "clover", 80, 0.0),
-        ]
+        # One fixed patch per drone, same order as px4_multi_drone.sh spawns.
+        # drone0 -> patch 1 ... drone5 -> patch 6.
+        self.flower_patches = []
+        for patch_id, x, y, kind, priority in self._fixed_patch_table():
+            self.flower_patches.append(
+                FlowerPatch(patch_id, x, y, 15.0, kind, priority, 0.0)
+            )
 
-        self.get_logger().info(f"🌸 Detected {len(self.flower_patches)} flower patches")
+        self.get_logger().info(
+            "🌸 Fixed patches: "
+            + ", ".join(
+                f"patch {p.id} ({p.center_x:.0f},{p.center_y:.0f})"
+                for p in self.flower_patches
+            )
+        )
 
     def _init_swarm_coordination(self):
         """Initialize swarm coordination with MARL"""
@@ -285,13 +292,14 @@ class IntelleSwarmPollinationNode(Node):
         self.drone_brains = {}
         self.drone_status = {}
 
-        for drone_id in self.drone_ids:
+        for i, drone_id in enumerate(self.drone_ids):
+            patch = self.flower_patches[i] if i < len(self.flower_patches) else None
             self.drone_status[drone_id] = DroneStatus(
                 drone_id=drone_id,
                 position=(0.0, 0.0, 0.0),
                 battery=100.0,
                 mission_state="ready",
-                current_target=None,
+                current_target=patch,
                 pollination_payload=100.0,
                 flowers_pollinated=0
             )
@@ -387,7 +395,168 @@ class IntelleSwarmPollinationNode(Node):
         # Main control loop timer
         self.control_timer = self.create_timer(0.1, self._control_loop)  # 10Hz
 
+        self._setup_swarm_broadcast()
+
         self.get_logger().info("✅ ROS2 Communication setup complete")
+
+    def _fixed_patch_table(self):
+        """Spawn patches in px4_multi_drone.sh order. Patch numbers start at 1."""
+        fruit = (
+            os.environ.get("PX4_GZ_WORLD", "") == "arg_fruits_tree"
+            or "arg_fruits" in os.environ.get("WORLD_FILE", "")
+        )
+        clover_x, clover_y = (15.0, 0.0) if fruit else (0.0, 0.0)
+        table = [
+            (1, 50.0, 50.0, "sunflower", 100),
+            (2, -50.0, 50.0, "sunflower", 100),
+            (3, clover_x, clover_y, "clover", 80),
+            (4, 25.0, 25.0, "support", 60),
+            (5, -25.0, 25.0, "support", 60),
+            (6, 0.0, 75.0, "north", 50),
+        ]
+        return table[: self.num_drones]
+
+    def _setup_swarm_broadcast(self):
+        """Each drone publishes its fixed patch and live pose; the others subscribe."""
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self._swarm_publishers = {}
+        self._swarm_subscribers = {}
+        self._swarm_heard: Dict[str, Dict[str, Optional[dict]]] = {}
+        self._swarm_states: List[dict] = []
+        self._swarm_tick = 0
+        # Same id created when this node started, shared with flower_predictions_<id>.json.
+        if not getattr(self, "_swarm_run_id", None):
+            self._swarm_run_id = time.strftime("%Y%m%d_%H%M%S")
+        self._swarm_json_path = (
+            Path(__file__).resolve().parent / f"swarm_states_{self._swarm_run_id}.json"
+        )
+        names = [f"drone{i}" for i in range(self.num_drones)]
+
+        for i, name in enumerate(names):
+            topic = f"/px4_{i}/swarm_state"
+            self._swarm_publishers[name] = self.create_publisher(String, topic, qos)
+            self._swarm_heard[name] = {other: None for other in names if other != name}
+
+        # drone0 subscribes to /px4_1 .. /px4_5, and each other drone does the same.
+        for listener_i, listener in enumerate(names):
+            for sender_i, sender in enumerate(names):
+                if sender_i == listener_i:
+                    continue
+                topic = f"/px4_{sender_i}/swarm_state"
+                key = f"{listener}:{sender}"
+                self._swarm_subscribers[key] = self.create_subscription(
+                    String,
+                    topic,
+                    lambda msg, who=listener_i: self._on_swarm_state(msg, who),
+                    qos,
+                )
+
+        self._write_swarm_json()
+        topics = ", ".join(f"/px4_{i}/swarm_state" for i in range(self.num_drones))
+        self.get_logger().info(f"📡 Swarm topics: {topics}")
+        self.get_logger().info(f"📝 Swarm JSON: {self._swarm_json_path}")
+
+    def _on_swarm_state(self, msg: String, listener_index: int):
+        """Store another drone's broadcast under the listener in the JSON map."""
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        sender = data.get("drone")
+        listener = f"drone{listener_index}"
+        if not sender or sender == listener:
+            return
+        heard = self._swarm_heard.setdefault(listener, {})
+        heard[sender] = {
+            "patch": data.get("patch"),
+            "x": data.get("x"),
+            "y": data.get("y"),
+            "altitude": data.get("altitude"),
+        }
+
+    def _live_pose(self, index: int) -> Tuple[float, float, float]:
+        drone_id = self.drone_ids[index] if index < len(self.drone_ids) else ""
+        fleet = self.fleet_drones.get(drone_id) if hasattr(self, "fleet_drones") else None
+        if fleet is not None:
+            ctrl = fleet.drone
+            return float(ctrl.current_x), float(ctrl.current_y), float(ctrl.current_z)
+        status = self.drone_status.get(drone_id)
+        if status is None:
+            return 0.0, 0.0, 0.0
+        return float(status.position[0]), float(status.position[1]), float(status.position[2])
+
+    def _broadcast_swarm_state(self):
+        """Publish 2 Hz. PX4 z is NED, so altitude is height above the local origin."""
+        if not getattr(self, "_swarm_publishers", None):
+            return
+        self._swarm_tick += 1
+        if self._swarm_tick % 5 != 0:
+            return
+        published = {}
+        for i in range(self.num_drones):
+            name = f"drone{i}"
+            pub = self._swarm_publishers.get(name)
+            if pub is None:
+                continue
+            x, y, z = self._live_pose(i)
+            patch = self.flower_patches[i] if i < len(self.flower_patches) else None
+            payload = {
+                "drone": name,
+                "patch": int(patch.id) if patch is not None else i + 1,
+                "x": round(x, 2),
+                "y": round(y, 2),
+                "altitude": round(-z, 2),
+            }
+            published[name] = payload
+            msg = String()
+            msg.data = json.dumps(payload, separators=(",", ":"))
+            pub.publish(msg)
+        if published:
+            self._swarm_states.append(self._swarm_snapshot(published))
+            self._write_swarm_json()
+
+    def _swarm_snapshot(self, published: Dict[str, dict]) -> dict:
+        """One log row. Own pose matches /px4_N/swarm_state; other keys are the rest of the fleet."""
+        now = time.time()
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+        stamp = f"{stamp}.{int((now % 1) * 1000):03d}"
+        names = [f"drone{i}" for i in range(self.num_drones)]
+        snapshot = {"time": stamp}
+        for name in names:
+            own = published.get(name)
+            if own is None:
+                continue
+            block = {
+                "patch": own["patch"],
+                "x": own["x"],
+                "y": own["y"],
+                "altitude": own["altitude"],
+            }
+            for other in names:
+                if other == name or other not in published:
+                    continue
+                pose = published[other]
+                block[other] = {
+                    "patch": pose["patch"],
+                    "x": pose["x"],
+                    "y": pose["y"],
+                    "altitude": pose["altitude"],
+                }
+            snapshot[name] = block
+        return snapshot
+
+    def _write_swarm_json(self):
+        """Append-only log. states[] keeps every 2 Hz sample from this spawn."""
+        document = {"id": self._swarm_run_id, "states": self._swarm_states}
+        path = self._swarm_json_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(path)
 
     def _init_px4_fleet(self):
         """Attach to PX4 SITL via prebuilt DroneController (/px4_0 .. /px4_5)."""
@@ -398,7 +567,13 @@ class IntelleSwarmPollinationNode(Node):
         except OSError:
             pass
 
-        capture_root = Path(__file__).resolve().parent / "multi_drone_script" / "captures"
+        capture_root = (
+            Path(__file__).resolve().parent
+            / "multi_drone_script"
+            / "captures"
+            / self._swarm_run_id
+        )
+        self.get_logger().info(f"📷 Captures for this spawn: {capture_root}")
         try:
             for i, drone_id in enumerate(self.drone_ids):
                 cap_dir = capture_root / f"drone{i}"
@@ -620,6 +795,7 @@ class IntelleSwarmPollinationNode(Node):
     def _control_loop(self):
         """Main control loop - runs at 10Hz"""
         self._sync_state_from_px4()
+        self._broadcast_swarm_state()
         for drone_id in self.drone_ids:
             self._assign_patch_from_position(drone_id)
 
@@ -935,8 +1111,8 @@ class IntelleSwarmPollinationNode(Node):
         self.mission_active = True
         self.mission_start_time = time.time()
         if reset_prediction_log is not None:
-            path = reset_prediction_log()
-            self.get_logger().info(f"📝 Flower predictions JSON reset: {path}")
+            path = reset_prediction_log(self._swarm_run_id)
+            self.get_logger().info(f"📝 Flower predictions JSON: {path}")
 
         for patch in self.flower_patches:
             patch.pollination_status = 0.0

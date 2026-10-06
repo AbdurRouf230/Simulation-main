@@ -1,7 +1,10 @@
 """One JSON file of FlowerDetector results for every captured mission image.
 
+One file per spawn. The id is the same local start time as swarm_states_<id>.json.
+
 Layout:
 {
+  "id": "20261005_152045",
   "drone0": {
     "frame_1": {"image": "/path/to.png", "prediction": [...]},
     "frame_2": {"image": "...", "prediction": [...]}
@@ -25,6 +28,7 @@ _MULTI = Path(__file__).resolve().parent
 _SIM = _MULTI.parent
 _REPO = _SIM.parent.parent
 JSON_PATH = _SIM / "flower_predictions.json"
+_run_id: Optional[str] = None
 
 _lock = threading.Lock()
 _infer_lock = threading.Lock()
@@ -53,19 +57,25 @@ except Exception as exc:
     FlowerDetector = None
 
 
-def reset_prediction_log() -> Path:
-    global _data
+def reset_prediction_log(run_id: Optional[str] = None) -> Path:
+    """Open flower_predictions_<run_id>.json for this spawn. Same id as swarm_states."""
+    global _data, JSON_PATH, _run_id
+    rid = run_id or time.strftime("%Y%m%d_%H%M%S")
+    path = _SIM / f"flower_predictions_{rid}.json"
     with _lock:
-        _data = {}
-        JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-        JSON_PATH.write_text("{}\n", encoding="utf-8")
-    return JSON_PATH
+        _run_id = rid
+        JSON_PATH = path
+        _data = {"id": rid}
+        _write_unlocked()
+    return path
 
 
 def _write_unlocked() -> None:
+    if _run_id:
+        _data["id"] = _run_id
     JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = JSON_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(_data, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(_data, indent=2) + "\n", encoding="utf-8")
     tmp.replace(JSON_PATH)
 
 

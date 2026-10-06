@@ -22,6 +22,7 @@ import argparse
 import threading
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 import rclpy
@@ -123,7 +124,9 @@ def main() -> None:
     fleets: list[FleetDrone] = []
     homes: list[tuple[float, float, float]] = []
 
-    base = Path(__file__).resolve().parent / 'captures'
+    run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    base = Path(__file__).resolve().parent / 'captures' / run_id
+    print(f'Captures for this run: {base}')
     for i in range(n):
         cap_dir = base / f'drone{i}'
         ctrl = DroneController(
